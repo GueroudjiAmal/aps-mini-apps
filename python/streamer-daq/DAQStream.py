@@ -367,8 +367,9 @@ def main():
 
   # create a topic
   topic_name = "daq_dist"
-  driver.create_topic(topic_name)
-  driver.add_memory_partition(topic_name, 0)
+  if not driver.topic_exists(topic_name):
+    driver.create_topic(topic_name)
+    driver.add_memory_partition(topic_name, 0)
   topic = driver.open_topic(topic_name)
   producer_name = "daq_producer"
   batchsize = mofka.AdaptiveBatchSize

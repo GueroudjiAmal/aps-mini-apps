@@ -73,11 +73,9 @@ class MofkaDist:
         self.nranks = 1
 
     def producer(self, topic_name: str, producer_name: str) -> mofka.Producer:
-        try:
+        if not self.driver.topic_exists(topic_name):
             topic = self.driver.create_topic(topic_name)
             self.driver.add_memory_partition(topic_name, 0)
-        except Exception as err:
-            print("Exception ", err, " trying to open topic", topic_name)
         topic = self.driver.open_topic(topic_name)
         batchsize = mofka.AdaptiveBatchSize
         thread_pool = mofka.ThreadPool(1)
@@ -89,11 +87,9 @@ class MofkaDist:
     def consumer(self, topic_name: str, consumer_name: str) -> mofka.Consumer:
         batch_size = mofka.AdaptiveBatchSize
         thread_pool = mofka.ThreadPool(0)
-        try:
+        if not self.driver.topic_exists(topic_name):
             topic = self.driver.create_topic(topic_name)
             self.driver.add_memory_partition(topic_name, 0)
-        except Exception as err:
-            print("Exception ", err, " trying to open topic", topic_name)
         topic = self.driver.open_topic(topic_name)
         consumer = topic.consumer(name=consumer_name,
                                   thread_pool=thread_pool,

@@ -98,11 +98,9 @@ def main(input_path, model_path, protocol, group_file):
     # create a topic
     topic_name = "sirt_den"
 
-    try:
-        driver.creat_topic(topic_name)
+    if not driver.topic_exists(topic_name):
+        driver.create_topic(topic_name)
         driver.add_memory_partition(topic_name, 0)
-    except:
-        pass
 
     topic = driver.open_topic(topic_name)
     consumer_name = "denoiser"
