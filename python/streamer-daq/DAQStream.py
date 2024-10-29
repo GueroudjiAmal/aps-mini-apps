@@ -414,7 +414,7 @@ def main():
               slp=args.iteration_sleep)
   else:
     print("Unknown mode: {}".format(args.mode))
-  producer.push({"Type": "FIN"}, b"")
+  producer.push({"Type": "FIN"})
   producer.flush()
   time1 = time.time()
   print("Total time (s): {:.2f}".format(time1-time0))

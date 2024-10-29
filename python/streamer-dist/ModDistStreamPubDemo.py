@@ -59,9 +59,9 @@ def main():
   args = parse_arguments()
   # setup mofka
   mofka = MofkaDist(mofka_protocol=args.protocol, group_file=args.group_file)
+  mofka.handshake(args.num_sinograms, args.num_columns)
   consumer = mofka.consumer(topic_name="daq_dist", consumer_name="dist")
   producer = mofka.producer(topic_name="dist_sirt", producer_name="producer_dist")
-  mofka.handshake(args.num_sinograms, args.num_columns)
 
   # Setup serializer
   serializer = TraceSerializer.ImageSerializer()

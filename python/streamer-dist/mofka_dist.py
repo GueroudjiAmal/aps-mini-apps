@@ -75,8 +75,11 @@ class MofkaDist:
     def producer(self, topic_name: str, producer_name: str) -> mofka.Producer:
         if not self.driver.topic_exists(topic_name):
             topic = self.driver.create_topic(topic_name)
-            self.driver.add_memory_partition(topic_name, 0)
+            for p in range(self.nranks):
+                print(p, self.nranks)
+                self.driver.add_memory_partition(topic_name, 0)
         topic = self.driver.open_topic(topic_name)
+        print(topic_name, "partitions", topic.partitions)
         batchsize = mofka.AdaptiveBatchSize
         thread_pool = mofka.ThreadPool(1)
         ordering = mofka.Ordering.Strict
@@ -104,20 +107,25 @@ class MofkaDist:
         print("start hanshake with sirt")
         topic = "handshake_s_d"
         consumer = self.consumer(topic, "handshaker")
+        print("consumer created ")
         f = consumer.pull()
+        print("after pull")
         event = f.wait()
-        event.acknowledge()
+        print("after wait")
+        #event.acknowledge()
+
         self.nranks = json.loads(event.metadata)["comm_size"]
         self.seq += 1
+        print("dist consumer done")
         topic = "handshake_d_s"
         producer = self.producer(topic, "handshaker")
         # distribute data info
         for p in range(self.nranks):
             info = assign_data(p, self.nranks, row, col)
-            f = producer.push(info, data=bytearray(np.ones(1)))
-            f.wait()
+            f = producer.push(info)
+        producer.flush()
         self.seq += 1
-
+        print("dist producer done")
         del event
         del consumer
         del producer
@@ -139,8 +147,8 @@ class MofkaDist:
         # Send data to workers
         for i in range(self.nranks):
             curr_msg = worker_msgs[i]
-            f = producer.push(curr_msg[0], curr_msg[1])
-            f.wait()
+            producer.push(curr_msg[0], curr_msg[1])
+
         self.seq += 1
         return 0
 
@@ -149,8 +157,7 @@ class MofkaDist:
         msg_metadata = {"Type": "FIN" }
         # Send Fin message to workers
         for i in range(self.nranks):
-            f = producer.push(msg_metadata, "Done".encode("ascii"))
-            f.wait()
+            producer.push(msg_metadata)
         self.seq += 1
         return 0
 

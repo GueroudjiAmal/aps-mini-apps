@@ -12,6 +12,10 @@ import tensorflow as tf
 import argparse
 import matplotlib.pyplot as plt
 
+import warnings
+warnings.filterwarnings("ignore", message="numpy.dtype size changed")
+warnings.filterwarnings("ignore", message="numpy.ufunc size changed")
+
 def data_selector(metadata, descriptor):
     return descriptor
 

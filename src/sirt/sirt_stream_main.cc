@@ -139,12 +139,9 @@ class MofkaStream
     mofka::Producer producer( std::string topic_name,
                               std::string producer_name="streamer_sirt"){
       // -- Create/open a topic
-      try{
+      if (!driver.topicExists(topic_name)){
         driver.createTopic(topic_name, validator, selector, serializer);
         driver.addDefaultPartition(topic_name, 0);
-      }catch (const mofka::Exception& e){
-        spdlog::info("{}", e.what());
-        spdlog::info("Opening Topic! {}", topic_name);
       }
       mofka::TopicHandle topic = driver.openTopic(topic_name);
       // -- Get a producer for the topic
@@ -152,28 +149,38 @@ class MofkaStream
                                                 batchSize,
                                                 threadCount,
                                                 ordering);
+      std::cout << "producer created " << std::endl;
       return producer;
     }
 
     mofka::Consumer consumer( std::string topic_name,
-                              std::string consumer_name="dist_sirt"){
-      // -- Create/open a topic
-      try{
-        driver.createTopic(topic_name, validator, selector, serializer);
-        driver.addDefaultPartition(topic_name, 0);
-      }catch (const mofka::Exception& e){
-        spdlog::info("{}", e.what());
-        spdlog::info("Opening Topic! {}", topic_name);
+                              std::string consumer_name="dist_sirt",
+                              std::vector<size_t> targets={0}){
+      // -- wait for topic to be created
+      while (!driver.topicExists(topic_name)){
+        continue;
+        std::cout << "wait for topic " << std::endl;
       }
+      // -- Wait until all partitions are created by producer
       mofka::TopicHandle topic = driver.openTopic(topic_name);
-
-
+      // for (int i=0; i < comm_size; i++){
+      //   driver.addDefaultPartition(topic_name, 0);
+      //   std::cout << "add partition " << i << "in topic" << topic_name << std::endl;
+      // }
+      std::cout << "topic opend " << topic_name << std::endl;
+      while (static_cast<int>(topic.partitions().size()) < comm_size) {
+        std::cout << "wait for partition size " << topic.partitions().size()<< " comm size" << comm_size << std::endl;
+        continue;
+      }
+      std::cout << "create consumer " << std::endl;
       // -- Get a consumer for the topic
       mofka::Consumer consumer = topic.consumer(consumer_name,
                                                 batchSize,
                                                 threadCount,
                                                 data_selector,
-                                                data_broker);
+                                                data_broker,
+                                                targets);
+      std::cout << "consumer created in  " << targets[0] << std::endl;
       return consumer;
     }
 
@@ -256,34 +263,25 @@ class MofkaStream
       }
 
     void handshake(int rank, int size){
-      std::string topic = "handshake_d_s";
-      //mofka::Consumer hs_consumer = consumer(topic, "hs_c");
+      std::string topic = "handshake_s_d";
+      std::cout << "before producer " << std::endl;
 
-      if (rank == 0) {
-        // Send comm size to dist_streamer
-        topic = "handshake_s_d";
-        mofka::Producer hs_producer = producer(topic, "hs_p");
-        json md = {{"comm_size", size}};
-        mofka::Metadata metadata{md};
-        auto future = hs_producer.push(metadata, mofka::Data{});
-        future.wait();
-      }
+      // Send comm size to dist_streamer
+      mofka::Producer hs_producer = producer(topic, "hs_p");
+      json md = {{"comm_size", size}};
+      mofka::Metadata metadata{md};
+      auto future = hs_producer.push(metadata);
+      future.wait();
+
+      std::cout << "after producer " << std::endl;
       // Receive metadata info
-
-      try{
-        driver.createTopic("handshake_d_s", validator, selector, serializer);
-        driver.addDefaultPartition("handshake_d_s", 0);
-      }catch (const mofka::Exception& e){
-        spdlog::info("{}", e.what());
-        spdlog::info("Opening Topic! {}", "handshake_d_s");
-      }
-      mofka::TopicHandle t = driver.openTopic("handshake_d_s");
-
-      // -- Get a consumer for the topic
-      mofka::Consumer hs_consumer = t.consumer("consumer_name",
-                                                batchSize, threadCount);
-      auto future = hs_consumer.pull();
-      auto event = future.wait();
+      topic = "handshake_d_s";
+      std::vector<size_t> targets = {static_cast<size_t>(rank)};
+      mofka::Consumer hs_consumer = consumer(topic,
+                                            "hs_c",
+                                            targets);
+      auto event = hs_consumer.pull().wait();
+      std::cout << "consumer pull done " << std::endl;
       mofka::Metadata m = event.metadata();
       json mdata = m.json();
       setInfo(mdata);
@@ -418,12 +416,16 @@ int main(int argc, char **argv)
                                 static_cast<uint32_t>(config.window_len),
                                 comm->rank(),
                                 comm->size()};
+
+  ms.handshake(comm->rank(), comm->size());
   std::string consuming_topic = "dist_sirt";
   std::string producing_topic = "sirt_den";
+  std::vector<size_t> targets {static_cast<size_t>(comm->rank())};
   mofka::Producer  producer = ms.producer(producing_topic, "sirt");
-  mofka::Consumer consumer = ms.consumer(consuming_topic, "sirt");
-  ms.handshake(comm->rank(), comm->size());
-
+  mofka::Consumer consumer = ms.consumer(consuming_topic,
+                                        "sirt",
+                                        targets);
+  std::cout << "both created " << std::endl;
   /* Get metadata structure */
   json tmetadata = ms.getInfo();
   auto n_blocks = tmetadata["n_sinograms"].get<int64_t>();
@@ -523,9 +525,9 @@ int main(int argc, char **argv)
         iteration_stream << std::setfill('0') << std::setw(6) << passes;
         std::string outputpath = config.kReconOutputDir + "/" +
           iteration_stream.str() + "-recon.h5";
-        trace_io::WriteRecon(
-            curr_slices->metadata(), h5md,
-            outputpath, config.kReconDatasetPath);
+        // trace_io::WriteRecon(
+        //     curr_slices->metadata(), h5md,
+        //     outputpath, config.kReconDatasetPath);
 
         try {
           TraceMetadata &rank_metadata = curr_slices->metadata();
