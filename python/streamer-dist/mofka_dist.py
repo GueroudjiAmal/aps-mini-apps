@@ -5,18 +5,20 @@ import mochi.mofka.client as mofka
 
 def generate_worker_msgs(data: np.ndarray, dims: list, projection_id: int, theta: float,
                          n_ranks: int, center: float, seq: int) -> list:
-    nsin = dims[1] // n_ranks  # Sinograms per rank
-    remaining = dims[1] % n_ranks  # Remaining sinograms
+    nsin = dims[0] // n_ranks  # Sinograms per rank
+    remaining = dims[0] % n_ranks  # Remaining sinograms
     msgs = []
     curr_sinogram_id = 0
     for i in range(n_ranks):
         r = 1 if remaining > 0 else 0
         remaining -= 1
         data_size = data.dtype.itemsize*(nsin + r) * dims[1]
-
         # Prepare the message for the worker
-        msg = prepare_data_rep_msg(
-            seq, projection_id, theta, center, data_size, data[curr_sinogram_id:curr_sinogram_id+(nsin+r)*dims[1]]
+        msg = prepare_data_rep_msg(seq,
+                                   projection_id,
+                                   theta, center,
+                                   data_size,
+                                   data[curr_sinogram_id*dims[1]:(curr_sinogram_id+(nsin+r))*dims[1]]
         )
         msgs.append(msg)
         curr_sinogram_id += (nsin + r)
@@ -68,34 +70,32 @@ class MofkaDist:
     def __init__(self, mofka_protocol: str, group_file: str):
         # setup mofka
         self.engine = Engine(mofka_protocol)
-        self.client = mofka.Client(self.engine)
-        self.service = self.client.connect(group_file)
+        self.driver = mofka.MofkaDriver(group_file, self.engine)
         self.seq = 0
         self.nranks = 1
 
     def producer(self, topic_name: str, producer_name: str) -> mofka.Producer:
-        try:
-            topic = self.service.create_topic(topic_name)
-            self.service.add_memory_partition(topic_name, 0)
-        except Exception as err:
-            print("Exception ", err, " trying to open topic", topic_name)
-        topic = self.service.open_topic(topic_name)
+        if not self.driver.topic_exists(topic_name):
+            self.driver.create_topic(topic_name)
+        for p in range(self.nranks):
+            self.driver.add_memory_partition(topic_name, 0)
+        topic = self.driver.open_topic(topic_name)
         batchsize = mofka.AdaptiveBatchSize
         thread_pool = mofka.ThreadPool(1)
         ordering = mofka.Ordering.Strict
-        producer = topic.producer(producer_name, batchsize,
-                                  thread_pool, ordering)
+        producer = topic.producer(producer_name,
+                                  batchsize,
+                                  thread_pool,
+                                  ordering)
         return producer
 
     def consumer(self, topic_name: str, consumer_name: str) -> mofka.Consumer:
         batch_size = mofka.AdaptiveBatchSize
         thread_pool = mofka.ThreadPool(0)
-        try:
-            topic = self.service.create_topic(topic_name)
-            self.service.add_memory_partition(topic_name, 0)
-        except Exception as err:
-            print("Exception ", err, " trying to open topic", topic_name)
-        topic = self.service.open_topic(topic_name)
+        if not self.driver.topic_exists(topic_name):
+            self.driver.create_topic(topic_name)
+            self.driver.add_memory_partition(topic_name, 0)
+        topic = self.driver.open_topic(topic_name)
         consumer = topic.consumer(name=consumer_name,
                                   thread_pool=thread_pool,
                                   batch_size=batch_size,
@@ -106,12 +106,11 @@ class MofkaDist:
 
     def handshake(self,  row: int , col: int) -> str :
         # Figure out how many ranks are there at the remote location
-        print("start hanshake with sirt")
         topic = "handshake_s_d"
         consumer = self.consumer(topic, "handshaker")
         f = consumer.pull()
         event = f.wait()
-        event.acknowledge()
+
         self.nranks = json.loads(event.metadata)["comm_size"]
         self.seq += 1
         topic = "handshake_d_s"
@@ -119,10 +118,9 @@ class MofkaDist:
         # distribute data info
         for p in range(self.nranks):
             info = assign_data(p, self.nranks, row, col)
-            f = producer.push(info, data=bytearray(np.ones(1)))
-            f.wait()
+            f = producer.push(info)
+        producer.flush()
         self.seq += 1
-
         del event
         del consumer
         del producer
@@ -143,9 +141,9 @@ class MofkaDist:
 
         # Send data to workers
         for i in range(self.nranks):
-            curr_msg = worker_msgs[i]
-            f = producer.push(curr_msg[0], curr_msg[1])
+            f = producer.push(worker_msgs[i][0], worker_msgs[i][1])
             f.wait()
+
         self.seq += 1
         return 0
 
@@ -153,18 +151,18 @@ class MofkaDist:
     def done_image(self, producer) -> int:
         msg_metadata = {"Type": "FIN" }
         # Send Fin message to workers
-        for i in range(self.nranks):
-            f = producer.push(msg_metadata, "Done".encode("ascii"))
-            f.wait()
+        for p in range(self.nranks):
+            producer.push(msg_metadata)
+        producer.flush()
         self.seq += 1
         return 0
 
-    def init(self, mofka_protocol: str, group_file: str) -> mofka.ServiceHandle:
+    def init(self, mofka_protocol: str, group_file: str) -> mofka.MofkaDriver:
         self.__init__(mofka_protocol, group_file)
-        return self.service
+        return self.driver
 
     def finalize(self):
-        del self.service
+        del self.driver
         del self.client
         self.engine.finalize()
         del self.engine

@@ -15,14 +15,8 @@ import matplotlib.pyplot as plt
 def data_selector(metadata, descriptor):
     return descriptor
 
-
 def data_broker(metadata, descriptor):
-    # note that we return a *list* of objects satisfying the buffer protocol
     return [ bytearray(descriptor.size) ]
-
-mofka_protocol = "na+sm"
-group_file = "/home/agueroudji/tekin-aps-mini-apps/build/mofka.json"
-
 
 def adjust_contrast(image_data):
     # Flatten the image data to 1D for histogram calculation
@@ -55,7 +49,6 @@ def denoise_data(model, data):
     # Adjust contrast for each image in the dataset
     adjusted_images = np.array([adjust_contrast(image) for image in data])
     # adjusted_data = adjust_contrast(data)
-
     # Apply the model to denoise the data
     if len(adjusted_images.shape) == 3:
         denoised_data = model.predict(adjusted_images[:, :, :, np.newaxis]).squeeze()
@@ -69,7 +62,7 @@ def denoise_data(model, data):
 def process_stream(model, data, metadata):
     denoised_data = denoise_data(model, data)
     # Save the denoised data to a new file
-    output_path = metadata["iteration_stream"]+'-denoised.h5'
+    output_path = metadata[0]["iteration_stream"]+'-denoised.h5'
     with h5py.File(output_path, 'w') as h5_output:
         h5_output.create_dataset('/data', data=denoised_data)
 
@@ -91,44 +84,65 @@ def process_directory(model, directory_path):
                 file_path = os.path.join(root, file)
                 process_file(model, file_path)
 
-def main(input_path, model_path):
+def main(input_path, model_path, protocol, group_file):
     # Load the saved model
     model = tf.keras.models.load_model(model_path)
-    engine = Engine(mofka_protocol)
-    client = mofka.Client(engine)
-    service = client.connect(group_file)
+    engine = Engine(protocol)
+    driver = mofka.MofkaDriver(group_file, engine)
     batch_size = AdaptiveBatchSize
     thread_pool = ThreadPool(0)
     # create a topic
-    topic_name = "recon"
-    topic = service.open_topic(topic_name)
+    topic_name = "sirt_den"
+
+    while not driver.topic_exists(topic_name):
+        pass
+
+    topic = driver.open_topic(topic_name)
+    while len(topic.partitions) < 1:
+        topic = driver.open_topic(topic_name)
+
     consumer_name = "denoiser"
     consumer = topic.consumer(name=consumer_name, thread_pool=thread_pool,
         batch_size=batch_size,
         data_selector=data_selector,
         data_broker=data_broker)
-    i = 0
-    while True:
-        f = consumer.pull()
-        event = f.wait()
-        data = event.data[0]
-        data = np.frombuffer(data, dtype=np.float32)
-        metadata = json.loads(event.metadata)
-        data = data.reshape(metadata["rank_dims"])
-        process_stream(model, data, metadata)
 
-    if os.path.isdir(input_path):
-        process_directory(model, input_path)
-    elif os.path.isfile(input_path) and input_path.endswith('.h5'):
-        process_file(model, input_path)
-    else:
-        print(f"Invalid input path: {input_path}")
+    while True:
+        data = []
+        metadata = []
+        for i in range(2):
+            f = consumer.pull()
+            event = f.wait()
+            metadata.append(json.loads(event.metadata))
+            if metadata[i]["Type"] == "FIN": break
+            else:
+                dd = event.data[0]
+                dd = np.frombuffer(dd, dtype=np.float32)
+                dd = dd.reshape(metadata[i]["rank_dims"])
+                data.append(dd)
+        else:
+            print(metadata)
+            correct_order = [d for _,d in sorted(zip([m["rank"] for m in metadata], data), key=lambda d: d[0])]
+            data = np.concatenate(correct_order, axis=0)
+            process_stream(model, data, metadata)
+            continue
+        break
+
+    if input_path is not None:
+        if os.path.isdir(input_path):
+            process_directory(model, input_path)
+        elif os.path.isfile(input_path) and input_path.endswith('.h5'):
+            process_file(model, input_path)
+        else:
+            print(f"Invalid input path: {input_path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Denoise HDF5 files using a trained model.')
     parser.add_argument('--input', type=str, required=False, help='Input file or directory path.')
     parser.add_argument('--model', type=str, required=True, help='Path to the saved model.')
+    parser.add_argument('--protocol', type=str, required=True, help='Mofka protocol')
+    parser.add_argument('--group_file', type=str, required=True, help='Path to group file')
 
     args = parser.parse_args()
-    main(args.input, args.model)
+    main(args.input, args.model, args.protocol, args.group_file)
 
